@@ -9,7 +9,46 @@ import sys
 #
 # - decode_bencode(b"5:hello") -> b"hello"
 # - decode_bencode(b"10:hello12345") -> b"hello12345"
+
+
+def parse_next_bencode(bs: str) -> (str, any):
+    identifier = chr(bs[0])
+
+    # we have a string
+    if identifier.isdigit():
+        length = int(bs.split(b":")[0])
+        # remove the length and the colon
+        bs = bs[len(str(length)) + 1 :]
+        value = bs[:length]
+        leftover = bs[length:]
+
+        return leftover, value
+
+    # we have an integer
+    elif identifier == "i":
+        # find the first e
+        value = bs[1 : bs.find(b"e")]
+        leftover = bs[bs.find(b"e") + 1 :]
+
+        return leftover, int(value)
+
+    # we have a list
+    elif identifier == "l":
+        # strip the l
+        bs = bs[1:]
+        value = []
+
+        while chr(bs[0]) != "e":
+            bs, v = parse_next_bencode(bs)
+            value.append(v)
+
+        # strip the e
+        bs = bs[1:]
+        return bs, value
+
+
 def decode_bencode(bencoded_value):
+    return parse_next_bencode(bencoded_value)[1]
     if chr(bencoded_value[0]).isdigit():
         length = int(bencoded_value.split(b":")[0])
         return bencoded_value.split(b":")[1][:length]
