@@ -15,6 +15,20 @@ def decode_bencode(bencoded_value):
         return bencoded_value.split(b":")[1][:length]
     elif chr(bencoded_value[0]) == "i":
         return int(bencoded_value[1:-1])
+    elif chr(bencoded_value[0]) == "l":
+        leftover = bencoded_value[1:-1]
+        result = []
+
+        while leftover:
+            if chr(leftover[0]).isdigit():
+                length = int(leftover.split(b":")[0])
+                result.append(leftover.split(b":")[1][:length])
+                leftover = leftover.split(b":")[1][length:]
+            elif chr(leftover[0]) == "i":
+                result.append(int(leftover[1:].split(b"e")[0]))
+                leftover = leftover[1:].split(b"e")[1]
+
+        return result
     else:
         raise NotImplementedError("Only strings are supported at the moment")
 
