@@ -68,27 +68,6 @@ def parse_next_bencode(bs: str) -> (str, any):
 
 def decode_bencode(bencoded_value):
     return parse_next_bencode(bencoded_value)[1]
-    if chr(bencoded_value[0]).isdigit():
-        length = int(bencoded_value.split(b":")[0])
-        return bencoded_value.split(b":")[1][:length]
-    elif chr(bencoded_value[0]) == "i":
-        return int(bencoded_value[1:-1])
-    elif chr(bencoded_value[0]) == "l":
-        leftover = bencoded_value[1:-1]
-        result = []
-
-        while leftover:
-            if chr(leftover[0]).isdigit():
-                length = int(leftover.split(b":")[0])
-                result.append(leftover.split(b":")[1][:length])
-                leftover = leftover.split(b":")[1][length:]
-            elif chr(leftover[0]) == "i":
-                result.append(int(leftover[1:].split(b"e")[0]))
-                leftover = leftover[1:].split(b"e")[1]
-
-        return result
-    else:
-        raise NotImplementedError("Only strings are supported at the moment")
 
 
 def main():
@@ -112,6 +91,16 @@ def main():
 
         # Uncomment this block to pass the first stage
         print(json.dumps(decode_bencode(bencoded_value), default=bytes_to_str))
+
+    elif command == "info":
+        # ./your_bittorrent.sh info sample.torrent
+        # read the torrent file
+        with open(sys.argv[2], "rb") as f:
+            torrent = f.read()
+            # parse the torrent file
+            torrent = decode_bencode(torrent)
+            print("Tracker URL:", torrent["announce"].decode("utf-8"))
+            print("Length:", torrent["info"]["length"])
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
