@@ -46,6 +46,25 @@ def parse_next_bencode(bs: str) -> (str, any):
         bs = bs[1:]
         return bs, value
 
+    # we have a dictionary
+    elif identifier == "d":
+        # strip the d
+        bs = bs[1:]
+
+        value = {}
+
+        while chr(bs[0]) != "e":
+            # get the key
+            bs, k = parse_next_bencode(bs)
+            # get the value
+            bs, v = parse_next_bencode(bs)
+
+            value[k.decode("utf-8")] = v
+
+        # strip the e
+        bs = bs[1:]
+        return bs, value
+
 
 def decode_bencode(bencoded_value):
     return parse_next_bencode(bencoded_value)[1]
