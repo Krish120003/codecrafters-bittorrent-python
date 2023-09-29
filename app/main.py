@@ -13,6 +13,8 @@ def decode_bencode(bencoded_value):
     if chr(bencoded_value[0]).isdigit():
         length = int(bencoded_value.split(b":")[0])
         return bencoded_value.split(b":")[1][:length]
+    elif chr(bencoded_value[0]) == "i":
+        return int(bencoded_value[1:-1])
     else:
         raise NotImplementedError("Only strings are supported at the moment")
 
