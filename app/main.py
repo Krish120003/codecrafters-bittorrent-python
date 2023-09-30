@@ -101,6 +101,148 @@ def encode_bencode(value) -> bytes:
     return res
 
 
+def get_peers(torrent):
+    url = torrent["announce"].decode("utf-8")
+
+    info_encoded = encode_bencode(torrent["info"])
+
+    res = requests.get(
+        url,
+        params={
+            "info_hash": hashlib.sha1(info_encoded).digest(),
+            "peer_id": "00112233445566778899",
+            "port": 6881,
+            "uploaded": 0,
+            "downloaded": 0,
+            "left": torrent["info"]["length"],
+            "compact": "1",
+        },
+    )
+
+    response = decode_bencode(res.content)
+    peers_raw = response["peers"]
+
+    peers = []
+
+    for i in range(0, len(peers_raw), 6):
+        ip = ".".join(str(j) for j in peers_raw[i : i + 4])
+        port = int.from_bytes(peers_raw[i + 4 : i + 6], byteorder="big")
+        peers.append(ip + ":" + str(port))
+
+    return peers
+
+
+def generate_handshake(torrent):
+    info_encoded = encode_bencode(torrent["info"])
+    info_hash = hashlib.sha1(info_encoded).digest()
+
+    # create the handshake
+    handshake = b"\x13BitTorrent protocol\x00\x00\x00\x00\x00\x00\x00\x00"
+    handshake += info_hash
+    handshake += b"00112233445566778899"
+    return handshake
+
+
+def do_handshake(torrent, peer_ip, peer_port):
+    handshake = generate_handshake(torrent)
+
+    # connect to the peer
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect((peer_ip, int(peer_port)))
+        s.send(handshake)
+        response_handshake = s.recv(len(handshake))
+
+    return response_handshake
+
+
+def download_piece(torrent_file, piece_index, output_file):
+    # read the torrent to get the file tracker url
+    with open(torrent_file, "rb") as f:
+        torrent = f.read()
+        # parse the torrent file
+        torrent = decode_bencode(torrent)
+
+    # get the peers
+    peers = get_peers(torrent)
+    peer = peers[1]  # we just use the first peer
+    peer_ip, peer_port = peer.split(":")
+
+    # connect to the peer
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        print("Connecting to peer", peer_ip, peer_port)
+        s.connect((peer_ip, int(peer_port)))
+        # send the handshake
+        handshake = generate_handshake(torrent)
+        s.sendall(handshake)
+        # receive the handshake
+        response_handshake = s.recv(len(handshake))
+
+        # we must wait for the bitfield message
+        # the bitfield message is the first message after the handshake
+        length, msg_type = s.recv(4), s.recv(1)
+        if msg_type != b"\x05":
+            raise Exception("Expected bitfield message")
+
+        # read the bitfield
+        # we subtract 1 because the length includes the type
+        s.recv(int.from_bytes(length, byteorder="big") - 1)  # read the bitfield
+
+        s.sendall(b"\x00\x00\x00\x01\x02")  # 1 length, 2 type (interested)
+
+        # we must wait for the unchoke message
+        length, msg_type = s.recv(4), s.recv(1)
+
+        while msg_type != b"\x01":  # wait for unchoke
+            length, msg_type = s.recv(4), s.recv(1)
+
+        # we are now unchoked
+
+        # get the current piece length
+        piece_length = torrent["info"]["piece length"]
+        # however, the last piece might be shorter
+        # so we need to check if this is the last piece
+        chuck_size = 16 * 1024
+
+        if piece_index == len(torrent["info"]["pieces"]) - 1:
+            piece_length = (
+                torrent["info"]["length"] % piece_length
+            )  # we can mod to find the remainder
+
+        piece = b""
+
+        for i in range(piece_length // chuck_size):
+            msg_id = b"\x06"
+            chunk_index = piece_index.to_bytes(4)
+            chunk_begin = (i * chuck_size).to_bytes(4)
+            chunk_length = chuck_size.to_bytes(4)
+
+            msg = msg_id + chunk_index + chunk_begin + chunk_length
+            msg = len(msg).to_bytes(4) + msg
+
+            s.sendall(msg)
+
+            # wait for the piece
+            length, msg_type = int.from_bytes(s.recv(4)), s.recv(1)
+
+            # assert msg_type == b"\x07"
+
+            # now we are getting the payload
+            resp_index = int.from_bytes(s.recv(4))
+            resp_begin = int.from_bytes(s.recv(4))
+
+            block = b""
+            while len(block) < chuck_size:
+                block += s.recv(chuck_size - len(block))
+
+            piece += block
+
+        og_hash = torrent["info"]["pieces"][piece_index * 20 : piece_index * 20 + 20]
+        assert hashlib.sha1(piece).digest() == og_hash
+
+        with open(output_file, "wb") as f:
+            f.write(piece)
+
+
 def main():
     command = sys.argv[1]
 
@@ -150,31 +292,8 @@ def main():
             # parse the torrent file
             torrent = decode_bencode(torrent)
 
-            url = torrent["announce"].decode("utf-8")
-
-            info_encoded = encode_bencode(torrent["info"])
-
-            res = requests.get(
-                url,
-                params={
-                    "info_hash": hashlib.sha1(info_encoded).digest(),
-                    "peer_id": "00112233445566778899",
-                    "port": 6881,
-                    "uploaded": 0,
-                    "downloaded": 0,
-                    "left": torrent["info"]["length"],
-                    "compact": "1",
-                },
-            )
-
-            response = decode_bencode(res.content)
-            peers = response["peers"]
-
-            for i in range(0, len(peers), 6):
-                ip = ".".join(str(j) for j in peers[i : i + 4])
-                port = int.from_bytes(peers[i + 4 : i + 6], byteorder="big")
-
-                print(ip + ":" + str(port))
+            peers = get_peers(torrent)
+            print(*peers, sep="\n")
 
     elif command == "handshake":
         # ./your_bittorrent.sh info sample.torrent <peer_ip>:<peer_port>
@@ -183,25 +302,22 @@ def main():
             torrent = f.read()
             # parse the torrent file
             torrent = decode_bencode(torrent)
-            info_encoded = encode_bencode(torrent["info"])
-            info_hash = hashlib.sha1(info_encoded).digest()
 
             peer_ip, peer_port = sys.argv[3].split(":")
-
-            # create the handshake
-            handshake = b"\x13BitTorrent protocol\x00\x00\x00\x00\x00\x00\x00\x00"
-            handshake += info_hash
-            handshake += b"00112233445566778899"
-
-            # connect to the peer
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((peer_ip, int(peer_port)))
-            s.send(handshake)
-            response_handshake = s.recv(len(handshake))
+            response_handshake = do_handshake(torrent, peer_ip, peer_port)
 
             # the last 20 bytes are the peer id
             peer_id = response_handshake[-20:]
             print("Peer ID:", peer_id.hex())
+
+    elif command == "download_piece":
+        #  ./your_bittorrent.sh download_piece -o /tmp/test-piece-0 sample.torrent 0
+
+        output_file = sys.argv[3]
+        torrent_file = sys.argv[4]
+        piece_index = int(sys.argv[5])
+
+        download_piece(torrent_file, piece_index, output_file)
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
