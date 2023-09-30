@@ -156,7 +156,7 @@ def do_handshake(torrent, peer_ip, peer_port):
     return response_handshake
 
 
-def download_piece(torrent_file, piece_index, output_file):
+def download_single_piece(torrent_file, piece_index, output_file):
     # read the torrent to get the file tracker url
     with open(torrent_file, "rb") as f:
         torrent = f.read()
@@ -198,63 +198,120 @@ def download_piece(torrent_file, piece_index, output_file):
 
         # we are now unchoked
 
-        # get the current piece length
-        piece_length = torrent["info"]["piece length"]
-        # however, the last piece might be shorter
-        # so we need to check if this is the last piece
-        chuck_size = 16 * 1024
-
-        if piece_index == (len(torrent["info"]["pieces"]) // 20) - 1:
-            piece_length = (
-                torrent["info"]["length"] % piece_length
-            )  # we can mod to find the remainder
-
-        piece = b""
-
-        for i in range(math.ceil(piece_length / chuck_size)):
-            msg_id = b"\x06"
-            chunk_index = piece_index.to_bytes(4)
-            chunk_begin = (i * chuck_size).to_bytes(4)
-
-            # if this is the last chunk, we need to get the remainder
-            if (
-                i == math.ceil((piece_length / chuck_size)) - 1
-                and piece_length % chuck_size != 0
-            ):
-                chunk_length = piece_length % chuck_size
-            else:
-                chunk_length = chuck_size
-
-            chunk_length = chunk_length.to_bytes(4)
-
-            print("Requesting", chunk_index, chunk_begin, chunk_length)
-
-            msg = msg_id + chunk_index + chunk_begin + chunk_length
-            msg = len(msg).to_bytes(4) + msg
-
-            s.sendall(msg)
-
-            # wait for the piece
-            length, msg_type = int.from_bytes(s.recv(4)), s.recv(1)
-
-            # assert msg_type == b"\x07"
-
-            # now we are getting the payload
-            resp_index = int.from_bytes(s.recv(4))
-            resp_begin = int.from_bytes(s.recv(4))
-
-            block = b""
-            to_get = int.from_bytes(chunk_length)
-            while len(block) < to_get:
-                block += s.recv(to_get - len(block))
-
-            piece += block
-
-        og_hash = torrent["info"]["pieces"][piece_index * 20 : piece_index * 20 + 20]
-        assert hashlib.sha1(piece).digest() == og_hash
+        piece = download_piece(piece_index, torrent, s)
 
         with open(output_file, "wb") as f:
             f.write(piece)
+
+
+def download_piece(piece_index, torrent, s):
+    piece_length = torrent["info"]["piece length"]
+    # however, the last piece might be shorter
+    # so we need to check if this is the last piece
+    chuck_size = 16 * 1024
+
+    if piece_index == (len(torrent["info"]["pieces"]) // 20) - 1:
+        piece_length = (
+            torrent["info"]["length"] % piece_length
+        )  # we can mod to find the remainder
+
+    piece = b""
+
+    for i in range(math.ceil(piece_length / chuck_size)):
+        msg_id = b"\x06"
+        chunk_index = piece_index.to_bytes(4)
+        chunk_begin = (i * chuck_size).to_bytes(4)
+
+        # if this is the last chunk, we need to get the remainder
+        if (
+            i == math.ceil((piece_length / chuck_size)) - 1
+            and piece_length % chuck_size != 0
+        ):
+            chunk_length = piece_length % chuck_size
+        else:
+            chunk_length = chuck_size
+
+        chunk_length = chunk_length.to_bytes(4)
+
+        print("Requesting", chunk_index, chunk_begin, chunk_length)
+
+        msg = msg_id + chunk_index + chunk_begin + chunk_length
+        msg = len(msg).to_bytes(4) + msg
+
+        s.sendall(msg)
+
+        # wait for the piece
+        length, msg_type = int.from_bytes(s.recv(4)), s.recv(1)
+
+        # assert msg_type == b"\x07"
+
+        # now we are getting the payload
+        resp_index = int.from_bytes(s.recv(4))
+        resp_begin = int.from_bytes(s.recv(4))
+
+        block = b""
+        to_get = int.from_bytes(chunk_length)
+        while len(block) < to_get:
+            block += s.recv(to_get - len(block))
+
+        piece += block
+
+    og_hash = torrent["info"]["pieces"][piece_index * 20 : piece_index * 20 + 20]
+    assert hashlib.sha1(piece).digest() == og_hash
+    return piece
+
+
+def download_file(torrent_file, output_file):
+    # read the torrent to get the file tracker url
+    with open(torrent_file, "rb") as f:
+        torrent = f.read()
+        # parse the torrent file
+        torrent = decode_bencode(torrent)
+
+    # get the peers
+    peers = get_peers(torrent)
+    peer = peers[1]  # we just use the first peer
+    peer_ip, peer_port = peer.split(":")
+
+    # connect to the peer
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        print("Connecting to peer", peer_ip, peer_port)
+        s.connect((peer_ip, int(peer_port)))
+
+        # send the handshake
+        handshake = generate_handshake(torrent)
+        s.sendall(handshake)
+        # receive the handshake
+        response_handshake = s.recv(len(handshake))
+
+        # we must wait for the bitfield message
+        # the bitfield message is the first message after the handshake
+        length, msg_type = s.recv(4), s.recv(1)
+        if msg_type != b"\x05":
+            raise Exception("Expected bitfield message")
+
+        # read the bitfield
+        # we subtract 1 because the length includes the type
+        s.recv(int.from_bytes(length, byteorder="big") - 1)  # read the bitfield
+
+        s.sendall(b"\x00\x00\x00\x01\x02")  # 1 length, 2 type (interested)
+
+        # we must wait for the unchoke message
+        length, msg_type = s.recv(4), s.recv(1)
+
+        while msg_type != b"\x01":  # wait for unchoke
+            length, msg_type = s.recv(4), s.recv(1)
+
+        # we are now unchoked
+
+        # now we just download every piece
+        data = b""
+        for i in range(len(torrent["info"]["pieces"]) // 20):
+            piece = download_piece(i, torrent, s)
+            data += piece
+
+        with open(output_file, "wb") as f:
+            f.write(data)
 
 
 def main():
@@ -331,7 +388,15 @@ def main():
         torrent_file = sys.argv[4]
         piece_index = int(sys.argv[5])
 
-        download_piece(torrent_file, piece_index, output_file)
+        download_single_piece(torrent_file, piece_index, output_file)
+
+    elif command == "download":
+        # ./your_bittorrent.sh download -o /tmp/test.txt sample.torrent
+
+        output_file = sys.argv[3]
+        torrent_file = sys.argv[4]
+
+        download_file(torrent_file, output_file)
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
