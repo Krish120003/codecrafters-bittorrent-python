@@ -1,5 +1,7 @@
 import json
 import sys
+import hashlib
+
 
 # import bencodepy - available if you need it!
 # import requests - available if you need it!
@@ -11,7 +13,10 @@ import sys
 # - decode_bencode(b"10:hello12345") -> b"hello12345"
 
 
-def parse_next_bencode(bs: str) -> (str, any):
+from typing import Tuple
+
+
+def parse_next_bencode(bs: bytes) -> Tuple[bytes, any]:
     identifier = chr(bs[0])
 
     # we have a string
@@ -59,15 +64,41 @@ def parse_next_bencode(bs: str) -> (str, any):
             # get the value
             bs, v = parse_next_bencode(bs)
 
-            value[k.decode("utf-8")] = v
+            value[k.decode()] = v
 
         # strip the e
         bs = bs[1:]
         return bs, value
 
+    raise NotImplementedError(f"Unknown identifier {identifier}")
+
 
 def decode_bencode(bencoded_value):
     return parse_next_bencode(bencoded_value)[1]
+
+
+def encode_bencode(value) -> bytes:
+    res = b""
+    if type(value) == str:
+        res = f"{len(value)}:{value}".encode("utf-8")
+    elif type(value) == bytes:
+        res = f"{len(value)}:".encode("utf-8") + value
+    elif type(value) == int:
+        res = f"i{value}e".encode("utf-8")
+    elif type(value) == list:
+        res = "l".encode("utf-8")
+        for v in value:
+            res += encode_bencode(v)
+        res += "e".encode("utf-8")
+
+    elif type(value) == dict:
+        res = "d".encode("utf-8")
+        for key in sorted(value.keys()):
+            res += encode_bencode(key)
+            res += encode_bencode(value[key])
+        res += "e".encode("utf-8")
+
+    return res
 
 
 def main():
@@ -101,6 +132,11 @@ def main():
             torrent = decode_bencode(torrent)
             print("Tracker URL:", torrent["announce"].decode("utf-8"))
             print("Length:", torrent["info"]["length"])
+
+            info_encoded = encode_bencode(torrent["info"])
+            info_hash = hashlib.sha1(info_encoded).hexdigest()
+            print("Info Hash:", info_hash)
+
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
