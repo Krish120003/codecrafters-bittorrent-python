@@ -4,7 +4,7 @@ import hashlib
 
 
 # import bencodepy - available if you need it!
-# import requests - available if you need it!
+import requests
 
 
 # Examples:
@@ -135,11 +135,46 @@ def main():
 
             info_encoded = encode_bencode(torrent["info"])
             info_hash = hashlib.sha1(info_encoded).hexdigest()
+
             print("Info Hash:", info_hash)
             print("Piece Length:", torrent["info"]["piece length"])
 
             for i in range(0, len(torrent["info"]["pieces"]), 20):
                 print(torrent["info"]["pieces"][i : i + 20].hex())
+
+    elif command == "peers":
+        # ./your_bittorrent.sh info sample.torrent
+        # read the torrent file
+        with open(sys.argv[2], "rb") as f:
+            torrent = f.read()
+            # parse the torrent file
+            torrent = decode_bencode(torrent)
+
+            url = torrent["announce"].decode("utf-8")
+
+            info_encoded = encode_bencode(torrent["info"])
+
+            res = requests.get(
+                url,
+                params={
+                    "info_hash": hashlib.sha1(info_encoded).digest(),
+                    "peer_id": "00112233445566778899",
+                    "port": 6881,
+                    "uploaded": 0,
+                    "downloaded": 0,
+                    "left": torrent["info"]["length"],
+                    "compact": "1",
+                },
+            )
+
+            response = decode_bencode(res.content)
+            peers = response["peers"]
+
+            for i in range(0, len(peers), 6):
+                ip = ".".join(str(j) for j in peers[i : i + 4])
+                port = int.from_bytes(peers[i + 4 : i + 6], byteorder="big")
+
+                print(ip + ":" + str(port))
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
