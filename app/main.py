@@ -136,6 +136,10 @@ def main():
             info_encoded = encode_bencode(torrent["info"])
             info_hash = hashlib.sha1(info_encoded).hexdigest()
             print("Info Hash:", info_hash)
+            print("Piece Length:", torrent["info"]["piece length"])
+
+            for i in range(0, len(torrent["info"]["pieces"]), 20):
+                print(torrent["info"]["pieces"][i : i + 20].hex())
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
