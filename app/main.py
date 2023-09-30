@@ -1,6 +1,7 @@
 import json
 import sys
 import hashlib
+import math
 
 
 # import bencodepy - available if you need it!
@@ -203,18 +204,30 @@ def download_piece(torrent_file, piece_index, output_file):
         # so we need to check if this is the last piece
         chuck_size = 16 * 1024
 
-        if piece_index == len(torrent["info"]["pieces"]) - 1:
+        if piece_index == (len(torrent["info"]["pieces"]) // 20) - 1:
             piece_length = (
                 torrent["info"]["length"] % piece_length
             )  # we can mod to find the remainder
 
         piece = b""
 
-        for i in range(piece_length // chuck_size):
+        for i in range(math.ceil(piece_length / chuck_size)):
             msg_id = b"\x06"
             chunk_index = piece_index.to_bytes(4)
             chunk_begin = (i * chuck_size).to_bytes(4)
-            chunk_length = chuck_size.to_bytes(4)
+
+            # if this is the last chunk, we need to get the remainder
+            if (
+                i == math.ceil((piece_length / chuck_size)) - 1
+                and piece_length % chuck_size != 0
+            ):
+                chunk_length = piece_length % chuck_size
+            else:
+                chunk_length = chuck_size
+
+            chunk_length = chunk_length.to_bytes(4)
+
+            print("Requesting", chunk_index, chunk_begin, chunk_length)
 
             msg = msg_id + chunk_index + chunk_begin + chunk_length
             msg = len(msg).to_bytes(4) + msg
@@ -231,8 +244,9 @@ def download_piece(torrent_file, piece_index, output_file):
             resp_begin = int.from_bytes(s.recv(4))
 
             block = b""
-            while len(block) < chuck_size:
-                block += s.recv(chuck_size - len(block))
+            to_get = int.from_bytes(chunk_length)
+            while len(block) < to_get:
+                block += s.recv(to_get - len(block))
 
             piece += block
 
